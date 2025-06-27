@@ -62,6 +62,11 @@ scipy==1.15.2
 setuptools==80.3.1
 six==1.17.0
 soupsieve==2.7
+supabase==2.3.0
+supabase-py==0.0.2
+postgrest==0.13.0
+gotrue==2.1.0
+python-dotenv==1.0.0
 tensorboard==2.19.0
 tensorboard-data-server==0.7.2
 tensorflow==2.19.0

@@ -12,11 +12,14 @@ services:
         value: "1"
       - key: GRADIO_PORT
         value: "7860"
+      - key: SUPABASE_URL
+        value: https://gxtlqnrevmdvlggwjloz.supabase.co
+        sync: false # You still need to verify this is correct
+      - key: SUPABASE_ANON_KEY
+        sync: false # Set this manually in the dashboard
+      - key: SUPABASE_REQUIRED
+        value: "false" # Set to "true" if you want to fail health checks when Supabase is down
     healthCheckPath: /health
     numInstances: 1
     region: oregon
-    autoDeploy: true
-    disk:
-      name: stock-app-disk
-      mountPath: /opt/render/project/src
-      sizeGB: 1 
+    autoDeploy: true 

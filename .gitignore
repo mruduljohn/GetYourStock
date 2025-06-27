@@ -1,1 +1,5 @@
 RENDER_DEPLOYMENT.md
+SUPABASE_SETUP.md
+supabase_schema.sql
+supabase_config.md
+.env

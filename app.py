@@ -10,10 +10,16 @@ import warnings
 import os
 import logging
 import time
-from typing import Dict, Any, Tuple, Optional
-from flask import Flask, jsonify, request
+from typing import Dict, Any, Tuple, Optional, List, Union
+from flask import Flask, jsonify, request, session, redirect, url_for
 import threading
 import sys
+import json
+from dotenv import load_dotenv
+import supabase_client
+
+# Load environment variables from .env file
+load_dotenv()
 
 # Suppress warnings
 warnings.filterwarnings("ignore")
@@ -141,6 +147,7 @@ def health_check_search():
     Validates:
     - Model availability and readiness
     - External API (yfinance) connectivity
+    - Supabase connection status
     - System resource availability
     - Response time benchmarks
     
@@ -207,7 +214,30 @@ def health_check_search():
         if not api_available:
             response_data["errors"].append(api_error or "Yahoo Finance API unavailable")
         
-        # Check 3: System resources (basic)
+        # Check 3: Supabase connectivity
+        logger.debug("Checking Supabase connectivity")
+        supabase_check_start = time.time()
+        
+        # Test Supabase connection
+        supabase_available = supabase_client.supabase is not None
+        
+        if supabase_available:
+            # Try a simple query to verify connection
+            try:
+                result = supabase_client.get_trending_stocks(1)
+                supabase_available = result[0]  # First element is success status
+                if not supabase_available:
+                    response_data["errors"].append(f"Supabase connection issue: {result[2]}")
+            except Exception as e:
+                supabase_available = False
+                response_data["errors"].append(f"Supabase error: {str(e)}")
+        else:
+            response_data["errors"].append("Supabase client not initialized")
+            
+        response_data["checks"]["supabase_connected"] = supabase_available
+        response_data["performance"]["supabase_check_ms"] = round((time.time() - supabase_check_start) * 1000, 2)
+        
+        # Check 4: System resources (basic)
         logger.debug("Checking system resources")
         try:
             import psutil
@@ -227,6 +257,10 @@ def health_check_search():
         
         # Determine overall health status
         critical_checks_passed = model_available and api_available
+        supabase_required = os.environ.get("SUPABASE_REQUIRED", "false").lower() == "true"
+        
+        if supabase_required:
+            critical_checks_passed = critical_checks_passed and supabase_available
         
         if critical_checks_passed and len(response_data["errors"]) == 0:
             response_data["status"] = "healthy"
@@ -245,6 +279,7 @@ def health_check_search():
         health_status.update({
             "model_loaded": model_available,
             "yfinance_accessible": api_available,
+            "supabase_connected": supabase_available,
             "last_check_timestamp": current_timestamp,
             "check_duration_ms": total_time_ms,
             "errors": response_data["errors"]
@@ -453,8 +488,8 @@ def create_plot(df, pred_data=None, future_data=None, title=""):
     )
     return fig
 
-def predict_stock(stock_symbol):
-    """Main prediction function for Gradio"""
+def predict_stock(stock_symbol, user_id=None):
+    """Main prediction function for Gradio with public Supabase storage"""
     try:
         df = get_stock_data(stock_symbol)
         X, y, scaler = prepare_data(df)
@@ -501,6 +536,42 @@ def predict_stock(stock_symbol):
             title=f"{stock_symbol} Technical Indicators",
             template='plotly_dark'
         )
+        
+        # Store prediction data for Supabase (public storage, no user association)
+        last_price = df['Close'].iloc[-1]
+        last_date = df.index[-1].date()
+        
+        # Prepare prediction data to save
+        prediction_data = {
+            "historical": {
+                "dates": [d.strftime("%Y-%m-%d") for d in df.index[-30:].to_list()],
+                "prices": df['Close'].iloc[-30:].to_list()
+            },
+            "future": {
+                "dates": [(df.index[-1] + dt.timedelta(days=i+1)).strftime("%Y-%m-%d") 
+                         for i in range(PREDICTION_DAYS)],
+                "prices": future_prices[:, 0].tolist()
+            },
+            "indicators": {
+                "sma_50": df['SMA_50'].iloc[-1] if not pd.isna(df['SMA_50'].iloc[-1]) else None,
+                "sma_200": df['SMA_200'].iloc[-1] if not pd.isna(df['SMA_200'].iloc[-1]) else None
+            }
+        }
+        
+        # Save prediction to Supabase if client is initialized (public storage)
+        if supabase_client.supabase:
+            try:
+                supabase_client.save_prediction(
+                    stock_symbol=stock_symbol,
+                    last_price=float(last_price),
+                    last_date=last_date,
+                    prediction_days=PREDICTION_DAYS,
+                    prediction_data=prediction_data
+                )
+                logger.info(f"Saved public prediction for {stock_symbol} to Supabase")
+            except Exception as e:
+                # Don't fail the prediction if saving fails
+                logger.warning(f"Failed to save prediction to Supabase: {str(e)}")
 
         return (
             f"${df['Close'].iloc[-1]:.2f}",
@@ -601,10 +672,20 @@ def initialize_application():
         else:
             logger.info("External API connectivity verified")
             
+        # Initialize Supabase client
+        supabase_success = supabase_client.init_supabase()
+        
+        if not supabase_success:
+            logger.warning("Supabase integration disabled - check credentials")
+            logger.warning("Prediction history and user features will be unavailable")
+        else:
+            logger.info("Supabase integration enabled for persistent storage")
+            
         # Update initial health status
         health_status.update({
             "model_loaded": model_success,
             "yfinance_accessible": api_success,
+            "supabase_connected": supabase_success,
             "last_check_timestamp": dt.datetime.utcnow().isoformat(),
             "errors": []
         })
@@ -614,6 +695,127 @@ def initialize_application():
     except Exception as e:
         logger.error(f"Application initialization failed: {str(e)}")
         return False
+
+# Additional routes for Supabase integration
+@app.route('/api/history', methods=['GET'])
+def get_prediction_history():
+    """
+    Get recent stock prediction history (public, no authentication needed).
+    
+    Query parameters:
+    - limit: Maximum number of records to return (default: 20, max: 100)
+    - symbol: Optional stock symbol to filter by
+    
+    Returns:
+        JSON: Prediction history with HTTP status codes
+    """
+    try:
+        # Get limit from query params or use default
+        limit = request.args.get('limit', default=20, type=int)
+        symbol = request.args.get('symbol')
+        
+        # Validate limit
+        if limit <= 0 or limit > 100:
+            limit = 20
+        
+        if symbol:
+            # Get predictions for specific symbol
+            success, history, error = supabase_client.get_predictions_by_symbol(symbol, limit)
+        else:
+            # Get recent predictions
+            success, history, error = supabase_client.get_recent_predictions(limit)
+        
+        if success:
+            return jsonify({
+                "success": True,
+                "history": history or [],
+                "count": len(history) if history else 0
+            }), 200
+        else:
+            return jsonify({
+                "success": False,
+                "error": error or "Unknown error getting prediction history"
+            }), 500
+    except Exception as e:
+        logger.error(f"Error in get_prediction_history: {str(e)}")
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
+
+@app.route('/api/trending', methods=['GET'])
+def get_trending():
+    """
+    Get trending stocks (most frequently searched).
+    
+    Query parameters:
+    - limit: Maximum number of stocks to return (default: 10)
+    - all: Set to "true" to get all trending stocks, not just weekly
+    
+    Returns:
+        JSON: Trending stocks with HTTP status codes
+    """
+    try:
+        limit = request.args.get('limit', default=10, type=int)
+        show_all = request.args.get('all', 'false').lower() == 'true'
+        
+        # Validate limit
+        if limit <= 0 or limit > 50:
+            limit = 10
+        
+        if show_all:
+            success, trending, error = supabase_client.get_all_trending_stocks()
+            # Limit the results
+            if trending and len(trending) > limit:
+                trending = trending[:limit]
+        else:
+            success, trending, error = supabase_client.get_trending_stocks(limit)
+        
+        if success:
+            return jsonify({
+                "success": True,
+                "trending": trending or [],
+                "count": len(trending) if trending else 0
+            }), 200
+        else:
+            return jsonify({
+                "success": False,
+                "error": error or "Unknown error getting trending stocks"
+            }), 500
+    except Exception as e:
+        logger.error(f"Error in get_trending: {str(e)}")
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
+
+@app.route('/api/stats', methods=['GET'])
+def get_stats():
+    """
+    Get general statistics about the prediction database.
+    
+    Returns:
+        JSON: Database statistics with HTTP status codes
+    """
+    try:
+        success, stats, error = supabase_client.get_prediction_stats()
+        
+        if success:
+            return jsonify({
+                "success": True,
+                "stats": stats or {}
+            }), 200
+        else:
+            return jsonify({
+                "success": False,
+                "error": error or "Unknown error getting statistics"
+            }), 500
+    except Exception as e:
+        logger.error(f"Error in get_stats: {str(e)}")
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
 
 if __name__ == "__main__":
     """
