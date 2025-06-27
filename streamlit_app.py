@@ -5,7 +5,16 @@ import yfinance as yf
 import datetime as dt
 import plotly.graph_objects as go
 from sklearn.preprocessing import MinMaxScaler
-from tensorflow.keras.models import load_model
+
+# Handle TensorFlow import gracefully
+try:
+    from tensorflow.keras.models import load_model
+    TENSORFLOW_AVAILABLE = True
+except ImportError as e:
+    TENSORFLOW_AVAILABLE = False
+    st.error(f"❌ TensorFlow not available: {str(e)}")
+    st.info("💡 This might be due to Python version compatibility. TensorFlow requires Python 3.9-3.12.")
+
 import warnings
 import os
 import logging
@@ -54,6 +63,10 @@ def load_ml_model():
         tuple: (model, success_status)
     """
     global model, model_loaded
+    
+    if not TENSORFLOW_AVAILABLE:
+        logger.error("TensorFlow is not available")
+        return None, False
     
     try:
         logger.info("Loading LSTM model...")
@@ -232,11 +245,21 @@ def main():
     st.title("📈 Real-Time Stock Predictor")
     st.markdown("Predict stock prices using LSTM neural networks with public prediction history")
     
+    # Check system requirements
+    if not TENSORFLOW_AVAILABLE:
+        st.error("❌ TensorFlow is not available. This is required for stock predictions.")
+        st.info("💡 **Deployment Issue**: TensorFlow requires Python 3.9-3.12. Please check your Python version.")
+        st.info("🔧 **Solution**: Update your deployment to use Python 3.12 or earlier.")
+        st.stop()
+    
     # Load model
     model, model_success = load_ml_model()
     
     if not model_success:
         st.error("❌ Failed to load the LSTM model. Please check if 'stock_price_model.h5' exists.")
+        if not os.path.exists('stock_price_model.h5'):
+            st.info("📁 **Missing Model**: The model file 'stock_price_model.h5' was not found.")
+            st.info("💡 **Solution**: Ensure the model file is included in your repository.")
         st.stop()
     
     # Sidebar for controls
@@ -264,6 +287,12 @@ def main():
         # System status
         st.header("🏥 System Status")
         
+        # TensorFlow status
+        if TENSORFLOW_AVAILABLE:
+            st.success("✅ TensorFlow: Available")
+        else:
+            st.error("❌ TensorFlow: Not Available")
+        
         # Model status
         if model_success:
             st.success("✅ LSTM Model: Loaded")
@@ -275,6 +304,14 @@ def main():
             st.success("✅ Database: Connected")
         else:
             st.warning("⚠️ Database: Offline")
+        
+        # Python version info
+        import sys
+        python_version = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
+        if sys.version_info >= (3, 13):
+            st.warning(f"⚠️ Python: {python_version} (TensorFlow incompatible)")
+        else:
+            st.success(f"✅ Python: {python_version}")
     
     # Main content area
     if predict_button and stock_symbol:
