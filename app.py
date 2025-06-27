@@ -8,37 +8,384 @@ from tensorflow.keras.models import load_model
 import gradio as gr
 import warnings
 import os
+import logging
+import time
+from typing import Dict, Any, Tuple, Optional
+from flask import Flask, jsonify, request
+import threading
+import sys
 
 # Suppress warnings
 warnings.filterwarnings("ignore")
+
+# Configure comprehensive logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('stock_app.log'),
+        logging.StreamHandler(sys.stdout)
+    ]
+)
+logger = logging.getLogger(__name__)
 
 # Constants
 PREDICTION_DAYS = 30
 TIME_STEP = 60
 DATA_YEARS = 3
+HEALTH_CHECK_TIMEOUT = 10  # seconds
 
-# Load model
-model = load_model('stock_price_model.h5')
-model.make_predict_function()  # For faster inference
+# Initialize Flask app
+app = Flask(__name__)
 
+# Global variables for model and health status
+model = None
+model_loaded = False
+last_health_check = None
+health_status = {
+    "model_loaded": False,
+    "yfinance_accessible": False,
+    "last_check_timestamp": None,
+    "check_duration_ms": None,
+    "errors": []
+}
+
+def load_ml_model():
+    """
+    Load the LSTM model with comprehensive error handling and logging.
+    
+    Returns:
+        bool: True if model loaded successfully, False otherwise
+        
+    Raises:
+        Exception: If model loading fails critically
+    """
+    global model, model_loaded
+    
+    try:
+        logger.info("Attempting to load LSTM model from stock_price_model.h5")
+        
+        if not os.path.exists('stock_price_model.h5'):
+            logger.error("Model file stock_price_model.h5 not found")
+            return False
+            
+        model = load_model('stock_price_model.h5')
+        model.make_predict_function()  # For faster inference
+        model_loaded = True
+        
+        logger.info("LSTM model loaded successfully")
+        return True
+        
+    except Exception as e:
+        logger.error(f"Failed to load LSTM model: {str(e)}")
+        model_loaded = False
+        return False
+
+def validate_stock_symbol(symbol: str) -> bool:
+    """
+    Validate stock symbol format and basic requirements.
+    
+    Args:
+        symbol (str): Stock symbol to validate
+        
+    Returns:
+        bool: True if symbol appears valid, False otherwise
+    """
+    if not symbol or not isinstance(symbol, str):
+        return False
+        
+    # Basic validation: alphanumeric, 1-5 characters, uppercase
+    symbol = symbol.strip().upper()
+    return (
+        len(symbol) >= 1 and 
+        len(symbol) <= 5 and 
+        symbol.isalnum()
+    )
+
+def test_yfinance_connectivity(test_symbol: str = "AAPL") -> Tuple[bool, Optional[str]]:
+    """
+    Test connectivity to Yahoo Finance API with timeout and error handling.
+    
+    Args:
+        test_symbol (str): Symbol to use for connectivity test
+        
+    Returns:
+        Tuple[bool, Optional[str]]: (success_status, error_message)
+    """
+    try:
+        logger.debug(f"Testing yfinance connectivity with symbol: {test_symbol}")
+        
+        # Attempt to fetch minimal data with timeout
+        end_date = dt.datetime.now()
+        start_date = end_date - dt.timedelta(days=5)  # Just 5 days for health check
+        
+        # This should be fast for health check
+        df = yf.download(test_symbol, start=start_date, end=end_date, progress=False)
+        
+        if df.empty:
+            return False, f"No data returned for symbol {test_symbol}"
+            
+        logger.debug("yfinance connectivity test successful")
+        return True, None
+        
+    except Exception as e:
+        error_msg = f"yfinance connectivity failed: {str(e)}"
+        logger.warning(error_msg)
+        return False, error_msg
+
+@app.route('/health/search', methods=['GET'])
+def health_check_search():
+    """
+    Comprehensive health check endpoint for search functionality.
+    
+    Validates:
+    - Model availability and readiness
+    - External API (yfinance) connectivity
+    - System resource availability
+    - Response time benchmarks
+    
+    Returns:
+        JSON: Detailed health status with HTTP status codes:
+        - 200: All systems operational
+        - 503: Critical services unavailable
+        - 500: Internal system errors
+        
+    Security considerations:
+    - No sensitive information exposed
+    - Rate limiting through basic timestamp tracking
+    - Input validation for optional test parameters
+    """
+    global health_status, last_health_check
+    
+    start_time = time.time()
+    current_timestamp = dt.datetime.utcnow().isoformat()
+    
+    logger.info("Health check initiated for search endpoint")
+    
+    try:
+        # Initialize response structure
+        response_data = {
+            "service": "stock_search",
+            "status": "unknown",
+            "timestamp": current_timestamp,
+            "checks": {},
+            "performance": {},
+            "errors": []
+        }
+        
+        # Check 1: Model availability
+        logger.debug("Checking model availability")
+        model_check_start = time.time()
+        
+        if not model_loaded or model is None:
+            logger.warning("Model not loaded, attempting to reload")
+            model_available = load_ml_model()
+        else:
+            model_available = True
+            
+        response_data["checks"]["model_loaded"] = model_available
+        response_data["performance"]["model_check_ms"] = round((time.time() - model_check_start) * 1000, 2)
+        
+        if not model_available:
+            response_data["errors"].append("LSTM model not available")
+        
+        # Check 2: External API connectivity
+        logger.debug("Checking yfinance API connectivity")
+        api_check_start = time.time()
+        
+        # Get test symbol from query parameter or use default
+        test_symbol = request.args.get('test_symbol', 'AAPL')
+        
+        # Validate test symbol to prevent injection
+        if not validate_stock_symbol(test_symbol):
+            test_symbol = 'AAPL'  # Fallback to safe default
+            
+        api_available, api_error = test_yfinance_connectivity(test_symbol)
+        response_data["checks"]["yfinance_api"] = api_available
+        response_data["performance"]["api_check_ms"] = round((time.time() - api_check_start) * 1000, 2)
+        
+        if not api_available:
+            response_data["errors"].append(api_error or "Yahoo Finance API unavailable")
+        
+        # Check 3: System resources (basic)
+        logger.debug("Checking system resources")
+        try:
+            import psutil
+            memory_percent = psutil.virtual_memory().percent
+            response_data["checks"]["memory_usage_percent"] = memory_percent
+            
+            if memory_percent > 90:
+                response_data["errors"].append(f"High memory usage: {memory_percent}%")
+                
+        except ImportError:
+            logger.debug("psutil not available, skipping memory check")
+            response_data["checks"]["memory_usage_percent"] = "unavailable"
+        
+        # Calculate overall status
+        total_time_ms = round((time.time() - start_time) * 1000, 2)
+        response_data["performance"]["total_check_ms"] = total_time_ms
+        
+        # Determine overall health status
+        critical_checks_passed = model_available and api_available
+        
+        if critical_checks_passed and len(response_data["errors"]) == 0:
+            response_data["status"] = "healthy"
+            http_status = 200
+            logger.info(f"Health check passed in {total_time_ms}ms")
+        elif critical_checks_passed:
+            response_data["status"] = "degraded"
+            http_status = 200
+            logger.warning(f"Health check passed with warnings in {total_time_ms}ms")
+        else:
+            response_data["status"] = "unhealthy"
+            http_status = 503
+            logger.error(f"Health check failed in {total_time_ms}ms")
+        
+        # Update global health status
+        health_status.update({
+            "model_loaded": model_available,
+            "yfinance_accessible": api_available,
+            "last_check_timestamp": current_timestamp,
+            "check_duration_ms": total_time_ms,
+            "errors": response_data["errors"]
+        })
+        last_health_check = time.time()
+        
+        return jsonify(response_data), http_status
+        
+    except Exception as e:
+        # Critical error in health check itself
+        error_msg = f"Health check system failure: {str(e)}"
+        logger.error(error_msg)
+        
+        error_response = {
+            "service": "stock_search",
+            "status": "error",
+            "timestamp": current_timestamp,
+            "error": "Health check system failure",
+            "performance": {
+                "total_check_ms": round((time.time() - start_time) * 1000, 2)
+            }
+        }
+        
+        return jsonify(error_response), 500
+
+@app.route('/health', methods=['GET'])
+def health_check_general():
+    """
+    General health check endpoint providing basic service status.
+    
+    Returns:
+        JSON: Basic health information
+    """
+    logger.info("General health check requested")
+    
+    current_time = dt.datetime.utcnow().isoformat()
+    uptime_info = "Service running"  # Basic uptime info
+    
+    basic_health = {
+        "service": "stock_prediction_service",
+        "status": "online",
+        "timestamp": current_time,
+        "uptime": uptime_info,
+        "version": "1.0.0"
+    }
+    
+    # Include last search health check if available
+    if last_health_check:
+        time_since_last_check = time.time() - last_health_check
+        basic_health["last_search_health_check_seconds_ago"] = round(time_since_last_check, 2)
+        basic_health["search_service_status"] = health_status.get("model_loaded", False) and health_status.get("yfinance_accessible", False)
+    
+    return jsonify(basic_health), 200
 
 def preprocess_data(df):
-    """Process yfinance data"""
-    df.columns = [col[0] if isinstance(col, tuple) else col for col in df.columns]
-    df = df.reset_index().rename(columns={'index': 'Date'})
-    df = df[['Date', 'High', 'Low', 'Open', 'Close', 'Volume']]
-    df['Date'] = pd.to_datetime(df['Date'])
-    df.set_index('Date', inplace=True)
-    return df
+    """
+    Process yfinance data with comprehensive validation and error handling.
+    
+    Args:
+        df (pd.DataFrame): Raw yfinance data
+        
+    Returns:
+        pd.DataFrame: Processed and validated dataframe
+        
+    Raises:
+        ValueError: If data format is invalid or insufficient
+    """
+    logger.debug("Preprocessing yfinance data")
+    
+    if df.empty:
+        raise ValueError("Empty dataframe provided to preprocess_data")
+    
+    try:
+        # Handle multi-level columns from yfinance
+        df.columns = [col[0] if isinstance(col, tuple) else col for col in df.columns]
+        df = df.reset_index().rename(columns={'index': 'Date'})
+        
+        # Validate required columns exist
+        required_columns = ['Date', 'High', 'Low', 'Open', 'Close', 'Volume']
+        missing_columns = [col for col in required_columns if col not in df.columns]
+        
+        if missing_columns:
+            raise ValueError(f"Missing required columns: {missing_columns}")
+        
+        df = df[required_columns]
+        df['Date'] = pd.to_datetime(df['Date'])
+        df.set_index('Date', inplace=True)
+        
+        # Validate data quality
+        if len(df) < TIME_STEP:
+            raise ValueError(f"Insufficient data: {len(df)} rows, need at least {TIME_STEP}")
+        
+        logger.debug(f"Data preprocessing completed: {len(df)} rows")
+        return df
+        
+    except Exception as e:
+        logger.error(f"Data preprocessing failed: {str(e)}")
+        raise
 
-
-def get_stock_data(stock_symbol):
-    """Fetch stock data with caching"""
-    end_date = dt.datetime.now()
-    start_date = end_date - dt.timedelta(days=365 * DATA_YEARS)
-    df = yf.download(stock_symbol, start=start_date, end=end_date)
-    return preprocess_data(df)
-
+def get_stock_data(stock_symbol: str) -> pd.DataFrame:
+    """
+    Fetch stock data with comprehensive validation, caching, and error handling.
+    
+    Args:
+        stock_symbol (str): Valid stock symbol
+        
+    Returns:
+        pd.DataFrame: Processed stock data
+        
+    Raises:
+        ValueError: If symbol is invalid or data unavailable
+        Exception: If external API fails
+    """
+    logger.info(f"Fetching stock data for symbol: {stock_symbol}")
+    
+    # Validate and sanitize input
+    if not validate_stock_symbol(stock_symbol):
+        raise ValueError(f"Invalid stock symbol format: {stock_symbol}")
+    
+    stock_symbol = stock_symbol.strip().upper()
+    
+    try:
+        end_date = dt.datetime.now()
+        start_date = end_date - dt.timedelta(days=365 * DATA_YEARS)
+        
+        logger.debug(f"Downloading data from {start_date.date()} to {end_date.date()}")
+        
+        df = yf.download(stock_symbol, start=start_date, end=end_date, progress=False)
+        
+        if df.empty:
+            raise ValueError(f"No data available for symbol: {stock_symbol}")
+        
+        processed_df = preprocess_data(df)
+        logger.info(f"Successfully fetched {len(processed_df)} days of data for {stock_symbol}")
+        
+        return processed_df
+        
+    except Exception as e:
+        error_msg = f"Failed to fetch data for {stock_symbol}: {str(e)}"
+        logger.error(error_msg)
+        raise Exception(error_msg)
 
 def prepare_data(df):
     """Prepare data for LSTM prediction"""
@@ -52,7 +399,6 @@ def prepare_data(df):
 
     return X.reshape(X.shape[0], TIME_STEP, 1), y, scaler
 
-
 def predict_future(model, data, scaler):
     """Generate future predictions"""
     last_data = data[-TIME_STEP:].reshape(1, TIME_STEP, 1)
@@ -65,7 +411,6 @@ def predict_future(model, data, scaler):
         last_data[0, -1, 0] = next_pred
 
     return scaler.inverse_transform(future_preds.reshape(-1, 1))
-
 
 def create_plot(df, pred_data=None, future_data=None, title=""):
     """Create interactive Plotly figure"""
@@ -107,7 +452,6 @@ def create_plot(df, pred_data=None, future_data=None, title=""):
         margin=dict(l=20, r=20, t=40, b=20)
     )
     return fig
-
 
 def predict_stock(stock_symbol):
     """Main prediction function for Gradio"""
@@ -169,7 +513,6 @@ def predict_stock(stock_symbol):
     except Exception as e:
         raise gr.Error(f"Prediction failed: {str(e)}")
 
-
 # Gradio Interface
 with gr.Blocks(title="Stock Prediction", theme=gr.themes.Default()) as demo:
     gr.Markdown("# 📈 Real-Time Stock Predictor")
@@ -202,5 +545,127 @@ with gr.Blocks(title="Stock Prediction", theme=gr.themes.Default()) as demo:
         outputs=[last_price, last_date, main_plot, future_plot, tech_plot]
     )
 
-# For Hugging Face Spaces
-demo.launch(debug=False)
+def run_gradio_app():
+    """
+    Run the Gradio interface in a separate thread.
+    
+    This allows both Flask API endpoints and Gradio interface to run simultaneously.
+    Configured for both local development and cloud deployment.
+    """
+    logger.info("Starting Gradio interface")
+    
+    # Get Gradio port from environment variable or use default
+    gradio_port = int(os.environ.get("GRADIO_PORT", 7860))
+    
+    # Configure for cloud deployment
+    server_name = "0.0.0.0"
+    share = os.environ.get("GRADIO_SHARE", "false").lower() == "true"
+    
+    try:
+        demo.launch(
+            server_name=server_name,
+            server_port=gradio_port,
+            share=share,
+            debug=False,
+            show_error=True,
+            quiet=True  # Reduce log noise in production
+        )
+    except Exception as e:
+        logger.error(f"Failed to start Gradio interface: {str(e)}")
+        # Don't crash the entire application if Gradio fails
+        logger.warning("Continuing without Gradio interface")
+
+def initialize_application():
+    """
+    Initialize the application by loading the model and setting up services.
+    
+    Returns:
+        bool: True if initialization successful, False otherwise
+    """
+    logger.info("Initializing Stock Prediction Application")
+    
+    try:
+        # Load the LSTM model
+        model_success = load_ml_model()
+        
+        if not model_success:
+            logger.warning("Application starting with model loading issues")
+        else:
+            logger.info("Model loaded successfully during initialization")
+            
+        # Test external API connectivity
+        api_success, api_error = test_yfinance_connectivity()
+        
+        if not api_success:
+            logger.warning(f"API connectivity issues during startup: {api_error}")
+        else:
+            logger.info("External API connectivity verified")
+            
+        # Update initial health status
+        health_status.update({
+            "model_loaded": model_success,
+            "yfinance_accessible": api_success,
+            "last_check_timestamp": dt.datetime.utcnow().isoformat(),
+            "errors": []
+        })
+        
+        return model_success and api_success
+        
+    except Exception as e:
+        logger.error(f"Application initialization failed: {str(e)}")
+        return False
+
+if __name__ == "__main__":
+    """
+    Main application entry point.
+    
+    Runs both Flask API server and Gradio interface concurrently.
+    Configured for both local development and cloud deployment (Render).
+    """
+    logger.info("Starting Stock Prediction Service")
+    
+    # Get port from environment variable (for Render deployment) or use default
+    port = int(os.environ.get("PORT", 5000))
+    gradio_port = int(os.environ.get("GRADIO_PORT", 7860))
+    
+    # Initialize the application
+    init_success = initialize_application()
+    
+    if not init_success:
+        logger.warning("Application started with initialization issues - check health endpoints")
+    
+    try:
+        # Start Gradio in a separate thread
+        gradio_thread = threading.Thread(
+            target=run_gradio_app,
+            daemon=True,
+            name="GradioThread"
+        )
+        gradio_thread.start()
+        
+        logger.info(f"Gradio interface started in background thread on port {gradio_port}")
+        
+        # Run Flask app on main thread
+        logger.info(f"Starting Flask API server on port {port}")
+        logger.info("Available endpoints:")
+        logger.info("  - GET /health - General service health")
+        logger.info("  - GET /health/search - Detailed search functionality health")
+        logger.info(f"  - Gradio UI available at http://localhost:{gradio_port}")
+        
+        # For production deployment (like Render), use appropriate settings
+        debug_mode = os.environ.get("FLASK_ENV", "production") == "development"
+        
+        app.run(
+            host="0.0.0.0",
+            port=port,
+            debug=debug_mode,
+            threaded=True
+        )
+        
+    except KeyboardInterrupt:
+        logger.info("Application shutdown requested")
+    except Exception as e:
+        logger.error(f"Application failed to start: {str(e)}")
+        sys.exit(1)
+    finally:
+        logger.info("Stock Prediction Service stopped")

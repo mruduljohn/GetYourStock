@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: stock-prediction-app
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python app.py
+    plan: free
+    envVars:
+      - key: FLASK_ENV
+        value: production
+      - key: PYTHONUNBUFFERED
+        value: "1"
+      - key: GRADIO_PORT
+        value: "7860"
+    healthCheckPath: /health
+    numInstances: 1
+    region: oregon
+    autoDeploy: true
+    disk:
+      name: stock-app-disk
+      mountPath: /opt/render/project/src
+      sizeGB: 1 
