@@ -75,8 +75,8 @@ def load_ml_model():
             logger.error("Model file stock_price_model.h5 not found")
             return False
             
-        model = load_model('stock_price_model.h5')
-        model.make_predict_function()  # For faster inference
+model = load_model('stock_price_model.h5')
+model.make_predict_function()  # For faster inference
         model_loaded = True
         
         logger.info("LSTM model loaded successfully")
@@ -354,8 +354,8 @@ def preprocess_data(df):
     
     try:
         # Handle multi-level columns from yfinance
-        df.columns = [col[0] if isinstance(col, tuple) else col for col in df.columns]
-        df = df.reset_index().rename(columns={'index': 'Date'})
+    df.columns = [col[0] if isinstance(col, tuple) else col for col in df.columns]
+    df = df.reset_index().rename(columns={'index': 'Date'})
         
         # Validate required columns exist
         required_columns = ['Date', 'High', 'Low', 'Open', 'Close', 'Volume']
@@ -365,16 +365,16 @@ def preprocess_data(df):
             raise ValueError(f"Missing required columns: {missing_columns}")
         
         df = df[required_columns]
-        df['Date'] = pd.to_datetime(df['Date'])
-        df.set_index('Date', inplace=True)
+    df['Date'] = pd.to_datetime(df['Date'])
+    df.set_index('Date', inplace=True)
         
         # Validate data quality
         if len(df) < TIME_STEP:
             raise ValueError(f"Insufficient data: {len(df)} rows, need at least {TIME_STEP}")
         
         logger.debug(f"Data preprocessing completed: {len(df)} rows")
-        return df
-        
+    return df
+
     except Exception as e:
         logger.error(f"Data preprocessing failed: {str(e)}")
         raise
@@ -402,8 +402,8 @@ def get_stock_data(stock_symbol: str) -> pd.DataFrame:
     stock_symbol = stock_symbol.strip().upper()
     
     try:
-        end_date = dt.datetime.now()
-        start_date = end_date - dt.timedelta(days=365 * DATA_YEARS)
+    end_date = dt.datetime.now()
+    start_date = end_date - dt.timedelta(days=365 * DATA_YEARS)
         
         logger.debug(f"Downloading data from {start_date.date()} to {end_date.date()}")
         
