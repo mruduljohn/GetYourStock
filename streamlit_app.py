@@ -42,6 +42,116 @@ PREDICTION_DAYS = 30
 TIME_STEP = 60
 DATA_YEARS = 3
 
+# Comprehensive stock lists organized by category
+STOCK_CATEGORIES = {
+    "🏆 Most Popular": [
+        ("AAPL", "Apple Inc."),
+        ("MSFT", "Microsoft Corporation"),
+        ("GOOGL", "Alphabet Inc. (Google)"),
+        ("AMZN", "Amazon.com Inc."),
+        ("TSLA", "Tesla Inc."),
+        ("NVDA", "NVIDIA Corporation"),
+        ("META", "Meta Platforms Inc."),
+        ("NFLX", "Netflix Inc.")
+    ],
+    "💰 Financial": [
+        ("JPM", "JPMorgan Chase & Co."),
+        ("BAC", "Bank of America Corp"),
+        ("WFC", "Wells Fargo & Company"),
+        ("GS", "Goldman Sachs Group Inc."),
+        ("MS", "Morgan Stanley"),
+        ("C", "Citigroup Inc."),
+        ("V", "Visa Inc."),
+        ("MA", "Mastercard Inc.")
+    ],
+    "🏭 Industrial": [
+        ("GE", "General Electric Company"),
+        ("CAT", "Caterpillar Inc."),
+        ("BA", "Boeing Company"),
+        ("MMM", "3M Company"),
+        ("HON", "Honeywell International"),
+        ("UPS", "United Parcel Service"),
+        ("FDX", "FedEx Corporation"),
+        ("LMT", "Lockheed Martin Corp")
+    ],
+    "⚕️ Healthcare": [
+        ("JNJ", "Johnson & Johnson"),
+        ("PFE", "Pfizer Inc."),
+        ("UNH", "UnitedHealth Group Inc."),
+        ("ABBV", "AbbVie Inc."),
+        ("TMO", "Thermo Fisher Scientific"),
+        ("ABT", "Abbott Laboratories"),
+        ("MRK", "Merck & Co. Inc."),
+        ("CVS", "CVS Health Corporation")
+    ],
+    "🛒 Consumer": [
+        ("PG", "Procter & Gamble Co."),
+        ("KO", "Coca-Cola Company"),
+        ("PEP", "PepsiCo Inc."),
+        ("WMT", "Walmart Inc."),
+        ("HD", "Home Depot Inc."),
+        ("MCD", "McDonald's Corporation"),
+        ("NKE", "Nike Inc."),
+        ("SBUX", "Starbucks Corporation")
+    ],
+    "⚡ Energy": [
+        ("XOM", "Exxon Mobil Corporation"),
+        ("CVX", "Chevron Corporation"),
+        ("COP", "ConocoPhillips"),
+        ("SLB", "Schlumberger NV"),
+        ("EOG", "EOG Resources Inc."),
+        ("PXD", "Pioneer Natural Resources"),
+        ("KMI", "Kinder Morgan Inc."),
+        ("OXY", "Occidental Petroleum")
+    ],
+    "🔌 Tech & Software": [
+        ("CRM", "Salesforce Inc."),
+        ("ORCL", "Oracle Corporation"),
+        ("ADBE", "Adobe Inc."),
+        ("NOW", "ServiceNow Inc."),
+        ("INTC", "Intel Corporation"),
+        ("AMD", "Advanced Micro Devices"),
+        ("QCOM", "Qualcomm Inc."),
+        ("IBM", "International Business Machines")
+    ],
+    "🚗 Automotive": [
+        ("F", "Ford Motor Company"),
+        ("GM", "General Motors Company"),
+        ("RIVN", "Rivian Automotive Inc."),
+        ("LCID", "Lucid Group Inc."),
+        ("NIO", "NIO Inc."),
+        ("TM", "Toyota Motor Corporation"),
+        ("HMC", "Honda Motor Co. Ltd."),
+        ("STLA", "Stellantis N.V.")
+    ],
+    "🏠 Real Estate & REITs": [
+        ("AMT", "American Tower Corporation"),
+        ("PLD", "Prologis Inc."),
+        ("CCI", "Crown Castle Inc."),
+        ("EQIX", "Equinix Inc."),
+        ("SPG", "Simon Property Group"),
+        ("O", "Realty Income Corporation"),
+        ("VTR", "Ventas Inc."),
+        ("ARE", "Alexandria Real Estate")
+    ],
+    "📱 Communication": [
+        ("T", "AT&T Inc."),
+        ("VZ", "Verizon Communications"),
+        ("TMUS", "T-Mobile US Inc."),
+        ("CMCSA", "Comcast Corporation"),
+        ("DIS", "Walt Disney Company"),
+        ("NFLX", "Netflix Inc."),
+        ("SPOT", "Spotify Technology"),
+        ("SNAP", "Snap Inc.")
+    ]
+}
+
+# Flatten all stocks for search functionality
+ALL_STOCKS = {}
+for category, stocks in STOCK_CATEGORIES.items():
+    for symbol, name in stocks:
+        ALL_STOCKS[symbol] = name
+
 # Global variables
 model = None
 model_loaded = False
@@ -264,25 +374,139 @@ def main():
     
     # Sidebar for controls
     with st.sidebar:
-        st.header("🔧 Controls")
+        st.header("🔧 Stock Selection")
         
-        # Stock symbol input
-        stock_symbol = st.text_input(
-            "Stock Symbol",
-            value="TSLA",
-            help="Enter a valid stock symbol (e.g., AAPL, MSFT, GOOGL)"
-        ).upper()
+        # Selection method
+        selection_method = st.radio(
+            "Choose selection method:",
+            ["📋 Browse Categories", "🔍 Search Stocks", "✍️ Manual Entry"],
+            index=0
+        )
         
-        # Example symbols
-        st.markdown("**Popular Symbols:**")
-        example_symbols = ["AAPL", "MSFT", "GOOGL", "AMZN", "TSLA", "NVDA", "META", "NFLX"]
-        selected_example = st.selectbox("Quick Select:", [""] + example_symbols)
+        stock_symbol = None
         
-        if selected_example:
-            stock_symbol = selected_example
+        if selection_method == "📋 Browse Categories":
+            # Category selection
+            selected_category = st.selectbox(
+                "Select Category:",
+                list(STOCK_CATEGORIES.keys()),
+                index=0  # Default to "Most Popular"
+            )
+            
+            # Stock selection within category
+            category_stocks = STOCK_CATEGORIES[selected_category]
+            stock_options = [f"{symbol} - {name}" for symbol, name in category_stocks]
+            
+            selected_stock = st.selectbox(
+                f"Select from {selected_category}:",
+                stock_options,
+                index=4 if selected_category == "🏆 Most Popular" else 0  # Default to TSLA in popular
+            )
+            
+            if selected_stock:
+                stock_symbol = selected_stock.split(" - ")[0]
+                
+        elif selection_method == "🔍 Search Stocks":
+            # Search functionality
+            search_term = st.text_input(
+                "Search stocks by symbol or company name:",
+                placeholder="e.g., AAPL, Apple, Microsoft..."
+            )
+            
+            if search_term:
+                search_term = search_term.upper().strip()
+                
+                # Find matching stocks
+                matches = []
+                for symbol, name in ALL_STOCKS.items():
+                    if (search_term in symbol.upper() or 
+                        search_term.lower() in name.lower()):
+                        matches.append((symbol, name))
+                
+                if matches:
+                    # Sort matches - exact symbol matches first
+                    matches.sort(key=lambda x: (x[0] != search_term, x[0]))
+                    
+                    match_options = [f"{symbol} - {name}" for symbol, name in matches[:20]]  # Limit to 20 results
+                    
+                    selected_match = st.selectbox(
+                        f"Found {len(matches)} matches:",
+                        match_options,
+                        index=0
+                    )
+                    
+                    if selected_match:
+                        stock_symbol = selected_match.split(" - ")[0]
+                        
+                    if len(matches) > 20:
+                        st.info(f"Showing top 20 of {len(matches)} results. Be more specific to narrow down.")
+                else:
+                    st.warning("No matches found. Try a different search term.")
+                    
+        else:  # Manual Entry
+            # Manual input with validation
+            manual_symbol = st.text_input(
+                "Enter Stock Symbol:",
+                value="TSLA",
+                help="Enter any valid stock symbol (1-5 characters)",
+                max_chars=5
+            ).upper().strip()
+            
+            if manual_symbol:
+                if validate_stock_symbol(manual_symbol):
+                    stock_symbol = manual_symbol
+                    
+                    # Show company name if known
+                    if manual_symbol in ALL_STOCKS:
+                        st.success(f"✅ {manual_symbol} - {ALL_STOCKS[manual_symbol]}")
+                    else:
+                        st.info(f"ℹ️ {manual_symbol} - Symbol not in our database but may still be valid")
+                else:
+                    st.error("❌ Invalid format. Use 1-5 alphanumeric characters.")
+        
+        # Display selected stock info
+        if stock_symbol:
+            st.markdown("---")
+            st.markdown("**📊 Selected Stock:**")
+            if stock_symbol in ALL_STOCKS:
+                st.write(f"**{stock_symbol}** - {ALL_STOCKS[stock_symbol]}")
+            else:
+                st.write(f"**{stock_symbol}** - Custom Symbol")
+            
+            # Quick stats from recent data (if available)
+            try:
+                with st.spinner("Loading quick stats..."):
+                    quick_data = yf.Ticker(stock_symbol).info
+                    if quick_data and 'regularMarketPrice' in quick_data:
+                        current_price = quick_data.get('regularMarketPrice', 'N/A')
+                        prev_close = quick_data.get('previousClose', 'N/A')
+                        
+                        if current_price != 'N/A' and prev_close != 'N/A':
+                            change = current_price - prev_close
+                            change_pct = (change / prev_close) * 100
+                            
+                            col1, col2 = st.columns(2)
+                            with col1:
+                                st.metric("Current", f"${current_price:.2f}")
+                            with col2:
+                                st.metric("Change", f"{change_pct:+.2f}%", f"${change:+.2f}")
+            except Exception:
+                pass  # Silently fail if quick stats unavailable
+        
+        st.markdown("---")
         
         # Predict button
-        predict_button = st.button("🚀 Predict Stock Price", type="primary")
+        predict_button = st.button(
+            "🚀 Generate Prediction", 
+            type="primary",
+            disabled=not stock_symbol,
+            use_container_width=True
+        )
+        
+        if not stock_symbol:
+            st.warning("⚠️ Please select a stock first")
+        
+        st.markdown("---")
         
         # System status
         st.header("🏥 System Status")
@@ -312,6 +536,15 @@ def main():
             st.warning(f"⚠️ Python: {python_version} (TensorFlow incompatible)")
         else:
             st.success(f"✅ Python: {python_version}")
+        
+        # Total stocks available
+        st.markdown("---")
+        st.markdown(f"**📈 {len(ALL_STOCKS)} stocks available**")
+        
+        # Categories summary
+        with st.expander("📋 Browse by Category"):
+            for category, stocks in STOCK_CATEGORIES.items():
+                st.write(f"**{category}:** {len(stocks)} stocks")
     
     # Main content area
     if predict_button and stock_symbol:
