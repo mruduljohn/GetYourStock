@@ -13,12 +13,11 @@ services:
       - key: GRADIO_PORT
         value: "7860"
       - key: SUPABASE_URL
-        value: https://gxtlqnrevmdvlggwjloz.supabase.co
-        sync: false # You still need to verify this is correct
+        sync: false # Set manually in dashboard: https://gxtlqnrevmdvlggwjloz.supabase.co
       - key: SUPABASE_ANON_KEY
         sync: false # Set this manually in the dashboard
       - key: SUPABASE_REQUIRED
-        value: "false" # Set to "true" if you want to fail health checks when Supabase is down
+        value: "true" # Set to "true" if you want to fail health checks when Supabase is down
     healthCheckPath: /health
     numInstances: 1
     region: oregon
